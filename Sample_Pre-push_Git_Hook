@@ -1,0 +1,99 @@
+#!/bin/bash
+# Git pre-push hook for Epistemic Pull Request system
+# Place this file in .git/hooks/pre-push and make it executable
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}🔍 YAJPH Epistemic Trial Starting...${NC}"
+
+# Get the last commit message as the "claim"
+CLAIM=$(git log -1 --pretty=%B)
+
+# Get the code diff
+CODE_DIFF=$(git diff HEAD^ HEAD)
+
+# Check if code_review.yaml exists
+if [ ! -f "code_review.yaml" ]; then
+    echo -e "${YELLOW}⚠️ Warning: code_review.yaml not found. Using default configuration.${NC}"
+    # You could create a minimal default here or skip the trial
+fi
+
+# Run the YAJPH trial
+echo -e "${BLUE}📋 Claim: ${NC}$CLAIM"
+echo -e "${BLUE}🔧 Running epistemic trial...${NC}"
+
+# Execute the trial command
+TRIAL_RESULT=$(yajph trial --claim "$CLAIM" --code-diff "$CODE_DIFF" 2>&1)
+TRIAL_EXIT_CODE=$?
+
+if [ $TRIAL_EXIT_CODE -eq 0 ]; then
+    # Check the verdict
+    if [ -f "VERDICT.json" ]; then
+        STATUS=$(python3 -c "import json; print(json.load(open('VERDICT.json'))['status'])" 2>/dev/null)
+        CONFIDENCE=$(python3 -c "import json; print(json.load(open('VERDICT.json'))['confidence'])" 2>/dev/null)
+        
+        case $STATUS in
+            "approved")
+                echo -e "${GREEN}✅ TRIAL PASSED${NC}"
+                echo -e "${GREEN}📊 Confidence: ${CONFIDENCE}${NC}"
+                echo -e "${GREEN}🚀 Push approved - proceeding...${NC}"
+                ;;
+            "rejected")
+                echo -e "${RED}❌ TRIAL FAILED${NC}"
+                echo -e "${RED}📊 Confidence: ${CONFIDENCE}${NC}"
+                echo -e "${RED}🚫 Push rejected - see TRIAL.log for details${NC}"
+                
+                # Show required changes if any
+                REQUIRED_CHANGES=$(python3 -c "import json; changes=json.load(open('VERDICT.json')).get('required_changes', []); [print(f'  - {change}') for change in changes]" 2>/dev/null)
+                if [ ! -z "$REQUIRED_CHANGES" ]; then
+                    echo -e "${YELLOW}📝 Required changes:${NC}"
+                    echo "$REQUIRED_CHANGES"
+                fi
+                
+                exit 1
+                ;;
+            "pending_human_review")
+                echo -e "${YELLOW}⏳ HUMAN REVIEW REQUIRED${NC}"
+                echo -e "${YELLOW}📊 Confidence: ${CONFIDENCE}${NC}"
+                echo -e "${YELLOW}👤 Manual approval needed - see TRIAL.log${NC}"
+                
+                # In strict mode, block the push
+                STRICT_MODE=$(grep -q "strict_mode: true" code_review.yaml 2>/dev/null && echo "true" || echo "false")
+                if [ "$STRICT_MODE" = "true" ]; then
+                    echo -e "${RED}🔒 Strict mode enabled - push blocked${NC}"
+                    exit 1
+                else
+                    echo -e "${YELLOW}⚠️ Proceeding with caution...${NC}"
+                fi
+                ;;
+            *)
+                echo -e "${RED}❓ Unknown status: $STATUS${NC}"
+                echo -e "${YELLOW}⚠️ Proceeding with caution...${NC}"
+                ;;
+        esac
+    else
+        echo -e "${RED}❌ VERDICT.json not found after trial${NC}"
+        echo -e "${YELLOW}⚠️ Proceeding without epistemic validation...${NC}"
+    fi
+else
+    echo -e "${RED}❌ YAJPH trial execution failed${NC}"
+    echo -e "${RED}Error output:${NC}"
+    echo "$TRIAL_RESULT"
+    echo -e "${YELLOW}⚠️ Proceeding without epistemic validation...${NC}"
+fi
+
+# Optional: Archive trial results with timestamp
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+if [ -f "TRIAL.log" ]; then
+    mkdir -p .yajph/trials
+    cp TRIAL.log ".yajph/trials/TRIAL_${TIMESTAMP}.log"
+    cp VERDICT.json ".yajph/trials/VERDICT_${TIMESTAMP}.json" 2>/dev/null || true
+fi
+
+echo -e "${BLUE}🔍 Epistemic trial complete${NC}"
+echo ""

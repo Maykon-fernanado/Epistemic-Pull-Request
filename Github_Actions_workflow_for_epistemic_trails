@@ -1,0 +1,190 @@
+name: Epistemic Trial by Fire
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop]
+
+jobs:
+  epistemic-trial:
+    runs-on: ubuntu-latest
+    name: Run Epistemic Code Review
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2  # Need at least 2 commits to get diff
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install YAJPH
+      run: |
+        pip install -e .
+        # Or: pip install yajph  # once published to PyPI
+    
+    - name: Prepare trial context
+      id: context
+      run: |
+        # Get the claim (commit message or PR title)
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          CLAIM="${{ github.event.pull_request.title }}"
+          echo "Using PR title as claim: $CLAIM"
+        else
+          CLAIM=$(git log -1 --pretty=%B)
+          echo "Using commit message as claim: $CLAIM"
+        fi
+        
+        # Get code diff
+        CODE_DIFF=$(git diff HEAD^ HEAD)
+        
+        # Save to environment for next steps
+        {
+          echo 'CLAIM<<EOF'
+          echo "$CLAIM"
+          echo 'EOF'
+        } >> $GITHUB_ENV
+        
+        {
+          echo 'CODE_DIFF<<EOF'
+          echo "$CODE_DIFF"
+          echo 'EOF'
+        } >> $GITHUB_ENV
+    
+    - name: Run YAJPH Epistemic Trial
+      id: trial
+      run: |
+        echo "🔍 Starting epistemic trial..."
+        echo "📋 Claim: $CLAIM"
+        
+        # Run the trial
+        yajph trial --claim "$CLAIM" --code-diff "$CODE_DIFF" --config code_review.yaml
+        
+        # Check if verdict file was created
+        if [ -f "VERDICT.json" ]; then
+          echo "✅ Trial completed successfully"
+          
+          # Extract verdict details
+          STATUS=$(python3 -c "import json; print(json.load(open('VERDICT.json'))['status'])")
+          CONFIDENCE=$(python3 -c "import json; print(json.load(open('VERDICT.json'))['confidence'])")
+          
+          echo "trial_status=$STATUS" >> $GITHUB_OUTPUT
+          echo "trial_confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+          
+          # Set job conclusion based on status
+          case $STATUS in
+            "approved")
+              echo "conclusion=success" >> $GITHUB_OUTPUT
+              ;;
+            "rejected")
+              echo "conclusion=failure" >> $GITHUB_OUTPUT
+              ;;
+            "pending_human_review")
+              echo "conclusion=neutral" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        else
+          echo "❌ Trial failed - no verdict generated"
+          echo "conclusion=failure" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Upload trial artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: epistemic-trial-results
+        path: |
+          TRIAL.log
+          VERDICT.json
+        retention-days: 30
+    
+    - name: Comment on PR (if applicable)
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // Read trial results
+          let trialSummary = '## 🔍 Epistemic Trial Results\n\n';
+          
+          try {
+            const verdict = JSON.parse(fs.readFileSync('VERDICT.json', 'utf8'));
+            const status = verdict.status;
+            const confidence = verdict.confidence;
+            
+            // Status icon and message
+            const statusIcon = {
+              'approved': '✅',
+              'rejected': '❌', 
+              'pending_human_review': '⏳'
+            }[status] || '❓';
+            
+            trialSummary += `**Status:** ${statusIcon} ${status.replace('_', ' ').toUpperCase()}\n`;
+            trialSummary += `**Confidence:** ${(confidence * 100).toFixed(1)}%\n\n`;
+            
+            // Add required changes if any
+            if (verdict.required_changes && verdict.required_changes.length > 0) {
+              trialSummary += '### 📝 Required Changes:\n';
+              verdict.required_changes.forEach(change => {
+                trialSummary += `- ${change}\n`;
+              });
+              trialSummary += '\n';
+            }
+            
+            // Add summary stats
+            if (verdict.summary) {
+              trialSummary += '### 📊 Trial Summary:\n';
+              trialSummary += `- **Deterministic Checks:** ${verdict.summary.deterministic_checks_passed}/${verdict.summary.total_deterministic_checks} passed\n`;
+              trialSummary += `- **Agents Consulted:** ${verdict.summary.agents_consulted.join(', ')}\n\n`;
+            }
+            
+            // Add link to full trial log
+            trialSummary += '📄 **Full trial log available in build artifacts**\n';
+            
+            // Add explanatory footer
+            trialSummary += '\n---\n';
+            trialSummary += '*This automated review was conducted by YAJPH (Yet Another JSON Protocol Handler) - The Anti-Black-Box Engine*\n';
+            trialSummary += '*Every decision is transparent, auditable, and comes with a roadmap for improvement.*';
+            
+          } catch (error) {
+            trialSummary += `❌ **Error reading trial results:** ${error.message}\n`;
+            trialSummary += 'Please check the build logs for more details.';
+          }
+          
+          // Post comment
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: trialSummary
+          });
+    
+    - name: Set job status
+      if: steps.trial.outputs.conclusion == 'failure'
+      run: |
+        echo "❌ Epistemic trial failed - see TRIAL.log for details"
+        exit 1
+    
+    - name: Success message
+      if: steps.trial.outputs.trial_status == 'approved'
+      run: |
+        echo "✅ Epistemic trial passed!"
+        echo "🚀 Code changes have been validated through adversarial AI review"
+        echo "📊 Confidence: ${{ steps.trial.outputs.trial_confidence }}"
+
+  # Optional: Deploy or merge job that depends on successful trial
+  deploy:
+    needs: epistemic-trial
+    if: github.ref == 'refs/heads/main' && needs.epistemic-trial.outputs.trial_status == 'approved'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Deploy approved changes
+      run: |
+        echo "🚀 Deploying epistemically validated code..."
+        # Your deployment logic here

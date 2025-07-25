@@ -1,0 +1,134 @@
+# Epistemic Code Review Configuration
+# This file defines the "cognitive constitution" for your codebase
+
+# Agent Configuration - Define the AI agents and their properties
+agents:
+  hype:
+    model: "claude-3-sonnet"
+    weight: 0.5
+    default_confidence: 0.7
+    prompt_template: |
+      You are the HYPE agent. Your job is to find the positive aspects and potential of this code change.
+      
+      Claim: {claim}
+      Code Diff: {code_diff}
+      
+      Focus on:
+      - Improvements and innovations
+      - Code quality enhancements
+      - Performance optimizations
+      - Architecture benefits
+      
+      Provide your analysis in JSON format with confidence, issues, and suggestions.
+  
+  critic:
+    model: "deepseek-coder"
+    weight: 1.5  # Critic gets higher weight
+    default_confidence: 0.8
+    prompt_template: |
+      You are the CRITIC agent. Your job is to find potential issues, vulnerabilities, and problems.
+      
+      Claim: {claim}
+      Code Diff: {code_diff}
+      
+      Focus on:
+      - Security vulnerabilities
+      - Performance issues
+      - Logic errors
+      - Breaking changes
+      - Code smell
+      
+      Be thorough and skeptical. Provide your analysis in JSON format.
+  
+  synthesizer:
+    model: "gpt-4"
+    weight: 1.0
+    default_confidence: 0.75
+    prompt_template: |
+      You are the SYNTHESIZER agent. Review the previous agents' analyses and provide a balanced conclusion.
+      
+      Claim: {claim}
+      Code Diff: {code_diff}
+      Previous Analyses: {previous_agents}
+      
+      Synthesize the findings and provide:
+      - Overall assessment
+      - Balanced view of risks vs benefits
+      - Final recommendation
+      
+      Provide your synthesis in JSON format.
+
+# Agent Execution Chain - Order matters!
+agent_chain:
+  - hype
+  - critic
+  - synthesizer
+
+# Deterministic Checks - These run without LLMs
+deterministic_checks:
+  line_count_check:
+    type: "script"
+    script: |
+      # Check if any single function exceeds 50 lines
+      if git diff HEAD^ HEAD --name-only | grep -E '\.(py|js|ts)$' | xargs -I {} sh -c 'echo "Checking {}"; grep -n "^def\\|^function\\|^class" {} || true' | wc -l > 50; then
+        exit 1
+      fi
+      exit 0
+    expected_exit_code: 0
+    critical: false
+    description: "Functions should not exceed 50 lines"
+  
+  no_console_logs:
+    type: "script"
+    script: |
+      # Check for console.log statements in production code
+      if git diff HEAD^ HEAD | grep -E '^\+.*console\.(log|debug|info)' > /dev/null; then
+        exit 1
+      fi
+      exit 0
+    expected_exit_code: 0
+    critical: true
+    description: "No console.log statements allowed in production"
+  
+  test_coverage:
+    type: "script"
+    script: |
+      # Placeholder for test coverage check
+      # In real implementation, this would run your test suite
+      echo "Running test coverage analysis..."
+      # coverage run -m pytest && coverage report --fail-under=80
+      exit 0
+    expected_exit_code: 0
+    critical: false
+    description: "Maintain test coverage above 80%"
+
+# Decision Thresholds
+approval_threshold: 0.8    # Auto-approve if confidence >= 80%
+rejection_threshold: 0.3   # Auto-reject if confidence <= 30%
+deterministic_weight: 2.0  # How much weight deterministic checks carry
+
+# Output Configuration
+output_dir: "."            # Where to save TRIAL.log and VERDICT.json
+
+# Conditional Logic (Future Enhancement)
+conditional_rules:
+  - condition: "agent_confidence['critic'] < 0.5"
+    action: "require_human_review"
+  - condition: "contains_breaking_change"
+    action: "run_integration_tests"
+  - condition: "affects_security_module"
+    action: "escalate_to_security_team"
+
+# Integration Settings
+integrations:
+  slack:
+    webhook_url: null  # Set to post results to Slack
+    notify_on: ["rejected", "pending_human_review"]
+  
+  github:
+    auto_comment: true
+    comment_on: ["pending_human_review", "rejected"]
+  
+  simulation:
+    enabled: false
+    test_suite: "integration_tests"
