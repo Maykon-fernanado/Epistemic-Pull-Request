@@ -4,7 +4,7 @@
 🚀 **Stop shipping bugs. Start shipping battle-tested code.**  
 
 ```bash
-pip install yajph
+pip install Epistemic-Pull-Request
 ```
 
 ## **Your Code is Too Comfortable**  
